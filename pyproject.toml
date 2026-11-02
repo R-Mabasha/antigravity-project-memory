@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antigravity-project-memory"
+version = "0.1.0"
+description = "Community Model Context Protocol (MCP) server providing local cross-conversation memory and algorithmic BM25 RAG for Antigravity workspaces."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Antigravity Community Contributors" }
+]
+keywords = [
+    "antigravity",
+    "mcp",
+    "model-context-protocol",
+    "rag",
+    "bm25",
+    "memory",
+    "ai-agent",
+    "developer-tools"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/R-Mabasha/antigravity-project-memory"
+Documentation = "https://github.com/R-Mabasha/antigravity-project-memory#readme"
+Repository = "https://github.com/R-Mabasha/antigravity-project-memory.git"
+Issues = "https://github.com/R-Mabasha/antigravity-project-memory/issues"
+
+[project.scripts]
+antigravity-project-memory = "antigravity_project_memory.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
