@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from antigravity_project_memory.retrieval_engine import normalize_workspace_uri
+from antigravity_project_memory.retrieval_engine import BM25Index, normalize_workspace_uri
 from antigravity_project_memory.server import (
     engine,
     get_conversation_artifact,
@@ -64,21 +65,104 @@ class TestWorkspaceResolution(unittest.TestCase):
             self.assertEqual(cwd_resolved, normalize_workspace_uri(os.getcwd()))
 
 
+import json
+import tempfile
+
 class TestServerMCPTools(unittest.TestCase):
-    """Tests the 4 MCP tools against live Antigravity conversations."""
+    """Tests the 4 MCP tools using hermetic fixture data (runs cleanly locally and in CI)."""
+
+    _temp_dir: tempfile.TemporaryDirectory | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.workspace = os.getcwd()
-        cls.known_cid = "fea0b2e7-abe8-45cf-9924-9d06b7c77d24"
-        cls.artifact_cid = "88e26d56-6df0-490d-81b5-13399a0f1088"
+        cls.workspace = os.path.normpath(os.getcwd())
+        cls.known_cid = "test-conv-uuid-101"
+        cls.artifact_cid = cls.known_cid
+
+        # Create isolated temporary fixture so tests pass in any CI runner or clean VM
+        cls._temp_dir = tempfile.TemporaryDirectory()
+        temp_root = cls._temp_dir.name
+        fixture_db = os.path.join(temp_root, "conversation_summaries.db")
+        fixture_brain = os.path.join(temp_root, "brain")
+
+        # Initialize SQLite schema & test conversation
+        conn = sqlite3.connect(fixture_db)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT,
+                preview TEXT,
+                step_count INTEGER,
+                last_modified_time TEXT,
+                workspace_uris TEXT,
+                status TEXT
+            )
+            """
+        )
+        ws_uri = f"file:///{normalize_workspace_uri(cls.workspace).replace(os.sep, '/')}"
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                cls.known_cid,
+                "Test Architecture Conversation",
+                "Chat memory antigravity architecture preview",
+                4,
+                "2026-11-02T12:00:00Z",
+                json.dumps([ws_uri]),
+                "active",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        # Create mock transcript and artifact
+        conv_dir = os.path.join(fixture_brain, cls.known_cid)
+        logs_dir = os.path.join(conv_dir, ".system_generated", "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+
+        transcript_file = os.path.join(logs_dir, "transcript.jsonl")
+        turn_events = [
+            {
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "content": "<USER_REQUEST>How should we configure chat memory antigravity?</USER_REQUEST>",
+                "created_at": "2026-11-02T12:00:00Z",
+            },
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "content": "Configure the FastMCP server using BM25 Okapi retrieval.",
+                "created_at": "2026-11-02T12:00:05Z",
+            },
+        ]
+        with open(transcript_file, "w", encoding="utf-8") as f:
+            for event in turn_events:
+                f.write(json.dumps(event) + "\n")
+
+        # Create mock artifact
+        artifact_file = os.path.join(conv_dir, "prompt_draft.md")
+        with open(artifact_file, "w", encoding="utf-8") as f:
+            f.write("# Teamwork Project Prompt\n\nInitial draft for multi-agent execution.\n")
+
+        # Point engine to hermetic fixtures
+        engine.db_path = fixture_db
+        engine.brain_dir = fixture_brain
+        engine.index = BM25Index()
+        engine.indexed_workspace = ""
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._temp_dir:
+            cls._temp_dir.cleanup()
 
     def test_1_list_project_conversations(self) -> None:
         result = list_project_conversations(self.workspace, limit=10)
         self.assertIn("# Antigravity Conversations", result)
         self.assertIn("Total Found", result)
         self.assertIn("| Conversation Title |", result)
-        # Should include known conversation
         self.assertIn(self.known_cid, result)
 
     def test_list_conversations_empty(self) -> None:
@@ -111,12 +195,10 @@ class TestServerMCPTools(unittest.TestCase):
         self.assertIn("Error: Transcript not found", result)
 
     def test_4_get_conversation_artifact(self) -> None:
-        # Test exact match
         result = get_conversation_artifact(self.artifact_cid, "prompt_draft.md")
         self.assertIn("# Artifact: prompt_draft.md", result)
         self.assertIn("Teamwork Project Prompt", result)
 
-        # Test match without extension
         result_no_ext = get_conversation_artifact(self.artifact_cid, "prompt_draft")
         self.assertIn("# Artifact: prompt_draft.md", result_no_ext)
 
@@ -128,7 +210,6 @@ class TestServerMCPTools(unittest.TestCase):
     def test_fastmcp_async_call_tool(self) -> None:
         """Verifies tool invocation via the FastMCP async protocol."""
         async def run_protocol() -> None:
-            # Test calling search_project_memory through FastMCP
             res, _ = await mcp.call_tool(
                 "search_project_memory",
                 {"query": "memory", "top_k": 2}
@@ -136,7 +217,6 @@ class TestServerMCPTools(unittest.TestCase):
             self.assertTrue(len(res) > 0)
             self.assertIn("Antigravity Project Memory Search Results", res[0].text)
 
-            # Test calling list_project_conversations through FastMCP
             res_list, _ = await mcp.call_tool(
                 "list_project_conversations",
                 {"limit": 5}
